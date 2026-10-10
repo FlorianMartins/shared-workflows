@@ -1,0 +1,41 @@
+# The baseline runs on its own repository first: a change that breaks it is
+# caught here, before any caller pins the new version.
+name: Self-test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Weekly: new advisories and new zizmor audits appear without a commit of ours.
+    - cron: "37 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  security:
+    name: security
+    uses: ./.github/workflows/security-baseline.yml # zizmor: ignore[self-repository] actionlint 1.7.12 does not parse $/ yet
+    permissions:
+      contents: read
+
+  scripts:
+    name: Scripts (shellcheck + python)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Shellcheck
+        run: shellcheck scripts/*.sh
+
+      - name: Python syntax
+        run: python3 -m py_compile scripts/*.py

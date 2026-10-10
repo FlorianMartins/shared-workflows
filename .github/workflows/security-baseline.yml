@@ -1,0 +1,121 @@
+# =============================================================================
+# Security baseline — the gates every repository runs, whatever its language.
+#
+#   secrets            Did a credential slip into git?          (gitleaks, full history)
+#   workflow-audit     Is the CI itself safe?                   (actionlint, zizmor)
+#   dependency-review  Does this PR add a vulnerable package?   (pull requests only)
+#
+# Call it from a repository (see templates/security.yml):
+#
+#   jobs:
+#     security:
+#       uses: FlorianMartins/shared-workflows/.github/workflows/security-baseline.yml@<sha> # v1.x
+#       permissions:
+#         contents: read
+#
+# Every tool is pinned: actions by commit SHA, binaries by version + SHA-256.
+# =============================================================================
+name: Security baseline
+
+on:
+  workflow_call:
+    inputs:
+      fail-on-severity:
+        description: "dependency-review: lowest advisory severity that fails a PR (low, moderate, high, critical)"
+        type: string
+        default: high
+      workflows-path:
+        description: "Directory audited by actionlint and zizmor"
+        type: string
+        default: .github/workflows
+      zizmor-persona:
+        description: "zizmor persona: regular (default), pedantic or auditor"
+        type: string
+        default: regular
+
+permissions:
+  contents: read
+
+env:
+  GITLEAKS_VERSION: "8.30.1"
+  GITLEAKS_SHA256: "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"
+  ACTIONLINT_VERSION: "1.7.12"
+  ACTIONLINT_SHA256: "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8"
+  ZIZMOR_VERSION: "1.30.1"
+
+jobs:
+  secrets:
+    name: Secret scanning (gitleaks)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          # gitleaks scans commits, so it needs the history, not just the tree.
+          fetch-depth: 0
+
+      - name: Install gitleaks (pinned, checksum-verified)
+        run: |
+          set -euo pipefail
+          curl -sSfL -o gitleaks.tgz \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          echo "${GITLEAKS_SHA256}  gitleaks.tgz" | sha256sum -c -
+          tar xzf gitleaks.tgz gitleaks && rm gitleaks.tgz
+          sudo mv gitleaks /usr/local/bin/
+          gitleaks version
+
+      - name: Scan the whole history
+        # Picks up the repository's .gitleaks.toml when there is one (allowlists
+        # for test fixtures). The binary, not the action: free for every account
+        # type, and no third-party code with access to the token.
+        run: gitleaks git --redact --no-banner --verbose .
+
+  workflow-audit:
+    name: Workflow audit (actionlint + zizmor)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install actionlint (pinned, checksum-verified)
+        run: |
+          set -euo pipefail
+          curl -sSfL -o actionlint.tgz \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          echo "${ACTIONLINT_SHA256}  actionlint.tgz" | sha256sum -c -
+          tar xzf actionlint.tgz actionlint && rm actionlint.tgz
+          sudo mv actionlint /usr/local/bin/
+
+      - name: Actionlint — syntax, expressions, shellcheck of run blocks
+        env:
+          WORKFLOWS_PATH: ${{ inputs.workflows-path }}
+        run: actionlint -color "${WORKFLOWS_PATH}"/*.y*ml
+
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+
+      - name: Zizmor — unpinned actions, injection, credentials, permissions
+        env:
+          GH_TOKEN: ${{ github.token }}
+          WORKFLOWS_PATH: ${{ inputs.workflows-path }}
+          PERSONA: ${{ inputs.zizmor-persona }}
+        run: uvx "zizmor==${ZIZMOR_VERSION}" --format github --persona "${PERSONA}" "${WORKFLOWS_PATH}"
+
+  dependency-review:
+    name: Dependency review
+    runs-on: ubuntu-latest
+    # The dependency graph diff needs GitHub Advanced Security on private
+    # repositories; on public ones it is free.
+    if: github.event_name == 'pull_request' && !github.event.repository.private
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Dependency review
+        # Diffs the dependency graph of the PR against its base (every ecosystem
+        # GitHub understands, Actions included) and blocks on a known advisory.
+        uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        with:
+          fail-on-severity: ${{ inputs.fail-on-severity }}
+          comment-summary-in-pr: never
