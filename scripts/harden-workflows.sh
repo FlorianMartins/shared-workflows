@@ -20,7 +20,10 @@ files=(.github/workflows/*.yml .github/workflows/*.yaml)
 [[ ${#files[@]} -gt 0 ]] || { echo "no workflow in $(pwd)"; exit 0; }
 
 token=$(gh auth token)
-GITHUB_TOKEN=$token pinact run "${files[@]}"
+# A ref pinact cannot resolve to a release (a branch such as @stable) is
+# reported and left as is: pin it by hand, and check whether the action reads
+# its ref name (dtolnay/rust-toolchain does: add `toolchain: stable`).
+GITHUB_TOKEN=$token pinact run "${files[@]}" || echo "⚠ pinact left some actions unpinned — see above"
 python3 -I "$here/harden_checkout.py" "${files[@]}"
 
 echo "▶ actionlint"
